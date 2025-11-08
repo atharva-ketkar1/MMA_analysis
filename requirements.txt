@@ -1,0 +1,4 @@
+requests
+pandas
+thefuzz
+python-Levenshtein
