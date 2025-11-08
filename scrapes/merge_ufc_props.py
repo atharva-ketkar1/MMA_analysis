@@ -34,7 +34,7 @@ def map_distance_odds(fighter_name, distance_df, name_cleaner):
 
 
 def find_best_match(name, choices_list, score_cutoff=85):
-    best_match = process.extractOne(name, choices_list, scorer=fuzz.token_sort_ratio)
+    best_match = process.extractOne(name, choices_list, scorer=fuzz.token_set_ratio)
     if best_match and best_match[1] >= score_cutoff:
         return best_match[0]
     return None
@@ -138,6 +138,7 @@ def merge_ufc_props():
     final_df = merged[[col for col in final_cols if col in merged.columns]]
     # Filter out rows where DK Line is NaN
     final_df = final_df[final_df["DK Line"].notna()].reset_index(drop=True)
+    final_df = final_df.loc[:, ~final_df.columns.duplicated(keep='last')]
 
 
     return final_df
