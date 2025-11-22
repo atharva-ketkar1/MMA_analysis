@@ -18,9 +18,11 @@ def slugify(text):
 
 
 def clean_name(name):
+    """Clean fighter name by removing common suffixes and normalizing."""
     if not isinstance(name, str):
         return ""
-    return (
+    
+    cleaned = (
         name.lower()
         .replace("jr.", "")
         .replace("jr", "")
@@ -31,28 +33,130 @@ def clean_name(name):
         .replace(".", "")
         .strip()
     )
+    
+    # Remove extra spaces
+    cleaned = ' '.join(cleaned.split())
+    
+    return cleaned
+
+
+def get_name_variants(name):
+    """
+    Generate common variants of a fighter name for better matching.
+    Handles nicknames, middle names, and common variations.
+    """
+    if not isinstance(name, str):
+        return [name]
+    
+    cleaned = clean_name(name)
+    variants = [cleaned]
+    
+    parts = cleaned.split()
+    
+    if len(parts) >= 2:
+        # First and last name only (removes middle names)
+        variants.append(f"{parts[0]} {parts[-1]}")
+        
+        # Last name only (for very unique last names)
+        if len(parts[-1]) > 4:  # Only if last name is reasonably unique
+            variants.append(parts[-1])
+    
+    # Common nickname mappings (can be expanded)
+    nickname_map = {
+        'daniel': 'dan',
+        'dan': 'daniel',
+        'anthony': 'tony',
+        'tony': 'anthony',
+        'william': 'will',
+        'will': 'william',
+        'william': 'billy',
+        'robert': 'rob',
+        'rob': 'robert',
+        'robert': 'bobby',
+        'james': 'jim',
+        'jim': 'james',
+        'james': 'jimmy',
+        'joseph': 'joe',
+        'joe': 'joseph',
+        'michael': 'mike',
+        'mike': 'michael',
+        'christopher': 'chris',
+        'chris': 'christopher',
+        'jonathan': 'jon',
+        'jon': 'jonathan',
+    }
+    
+    # Apply nickname transformations
+    if len(parts) >= 1:
+        first_name = parts[0]
+        if first_name in nickname_map:
+            nickname = nickname_map[first_name]
+            # Create variant with nickname + rest of name
+            variant = ' '.join([nickname] + parts[1:])
+            variants.append(variant)
+            
+            # Also add nickname + last name only
+            if len(parts) >= 2:
+                variants.append(f"{nickname} {parts[-1]}")
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_variants = []
+    for v in variants:
+        if v not in seen:
+            seen.add(v)
+            unique_variants.append(v)
+    
+    return unique_variants
+
+
+def find_best_match(name, choices_list, score_cutoff=70):
+    """
+    Find best match using multiple fuzzy matching strategies.
+    Returns the best match if above cutoff, otherwise None.
+    """
+    if choices_list is None or len(choices_list) == 0:
+        return None
+    
+    # Generate variants for the input name
+    name_variants = get_name_variants(name)
+    
+    best_match = None
+    best_score = 0
+    
+    # Try each variant with different scoring algorithms
+    scorers = [fuzz.token_sort_ratio, fuzz.token_set_ratio, fuzz.ratio]
+    
+    for variant in name_variants:
+        for scorer in scorers:
+            try:
+                match = process.extractOne(variant, choices_list, scorer=scorer)
+                if match and match[1] > best_score:
+                    best_score = match[1]
+                    best_match = match[0]
+            except:
+                continue
+    
+    if best_match and best_score >= score_cutoff:
+        return best_match
+    
+    return None
 
 
 def map_distance_odds(fighter_name, distance_df, name_cleaner):
+    """Map distance odds using token overlap scoring."""
     fighter_parts = set(name_cleaner(fighter_name).split())
     best_score = 0
     found_odds = None
+    
     for _, row in distance_df.iterrows():
         fight_parts = set(name_cleaner(row['fight']).split())
         match_score = len(fighter_parts.intersection(fight_parts))
         if match_score > best_score:
             best_score = match_score
             found_odds = row.get('odds')
+    
     return found_odds
-
-
-def find_best_match(name, choices_list, score_cutoff=85):
-    if choices_list is None or len(choices_list) == 0:
-        return None
-    best_match = process.extractOne(name, choices_list, scorer=fuzz.token_set_ratio)
-    if best_match and best_match[1] >= score_cutoff:
-        return best_match[0]
-    return None
 
 
 def merge_ufc_props():
@@ -75,7 +179,6 @@ def merge_ufc_props():
         # Check if PrizePicks returned empty data
         if df_pp.empty:
             print("[WARN] PrizePicks returned no data. Continuing with DraftKings data only.")
-            # Return a minimal DataFrame with DK data
             return pd.DataFrame(columns=[
                 "fighter", "PP Line", "DK Line", "Difference (PP−DK)",
                 "Best Bet (DK)", "Going Distance", "Actual", "Between Lines",
@@ -126,12 +229,41 @@ def merge_ufc_props():
     # Fuzzy match DK fighters to PP fighters
     dk_name_choices = df_dk_filtered['fighter_clean'].unique()
     print(f"\n[DEBUG] Number of unique DK fighters: {len(dk_name_choices)}")
+    print(f"[DEBUG] DK fighters: {list(dk_name_choices)}")
     
-    df_pp['dk_match_name'] = df_pp['fighter_clean'].apply(
-        find_best_match, args=(dk_name_choices,)
-    )
+    # Add debug output for matching
+    df_pp['dk_match_name'] = None
+    match_scores = []
+    
+    for idx, row in df_pp.iterrows():
+        pp_clean = row['fighter_clean']
+        match = find_best_match(pp_clean, dk_name_choices)
+        df_pp.at[idx, 'dk_match_name'] = match
+        
+        # Debug output for each match attempt
+        if match:
+            # Get the best score for reporting
+            best_score = 0
+            for variant in get_name_variants(pp_clean):
+                for scorer in [fuzz.token_sort_ratio, fuzz.token_set_ratio, fuzz.ratio]:
+                    try:
+                        score = scorer(variant, match)
+                        best_score = max(best_score, score)
+                    except:
+                        pass
+            
+            match_scores.append(best_score)
+            print(f"[DEBUG] ✓ Matched '{row['Player']}' ({pp_clean}) -> '{match}' (score: {best_score})")
+        else:
+            match_scores.append(0)
+            print(f"[DEBUG] ✗ NO MATCH for '{row['Player']}' ({pp_clean})")
+            print(f"         Tried variants: {get_name_variants(pp_clean)}")
+    
     print(f"\n[DEBUG] df_pp shape after adding dk_match_name: {df_pp.shape}")
-    print(f"[DEBUG] df_pp columns before merge: {df_pp.columns.tolist()}")
+    print(f"[DEBUG] Successful matches: {df_pp['dk_match_name'].notna().sum()}/{len(df_pp)}")
+    if match_scores:
+        avg_score = sum(s for s in match_scores if s > 0) / max(1, sum(1 for s in match_scores if s > 0))
+        print(f"[DEBUG] Average match score: {avg_score:.1f}")
 
     merged = pd.merge(
         df_pp,
@@ -143,6 +275,10 @@ def merge_ufc_props():
     print(f"\n[DEBUG] merged shape after initial merge: {merged.shape}")
     print(f"[DEBUG] merged columns after merge: {merged.columns.tolist()}")
 
+    # Drop the 'fighter' column from DK before renaming to avoid duplicates
+    if 'fighter' in merged.columns:
+        merged = merged.drop(columns=['fighter'])
+    
     merged = merged.rename(columns={"Player": "fighter"})
     print(f"\n[DEBUG] merged shape after rename: {merged.shape}")
     print(f"[DEBUG] merged columns after rename: {merged.columns.tolist()}")
@@ -200,7 +336,23 @@ def merge_ufc_props():
     final_df = merged[[col for col in final_cols if col in merged.columns]]
     
     # Filter out rows where DK Line is NaN
+    print(f"\n[DEBUG] Rows before filtering NaN DK Lines: {len(final_df)}")
+    print(f"[DEBUG] Rows with NaN DK Lines: {final_df['DK Line'].isna().sum()}")
+    
+    # Show which fighters are being filtered out
+    missing_dk_mask = final_df['DK Line'].isna()
+    if missing_dk_mask.any():
+        # Handle potential DataFrame column issue
+        fighter_col = final_df.loc[missing_dk_mask, 'fighter']
+        if isinstance(fighter_col, pd.DataFrame):
+            missing_dk = fighter_col.iloc[:, 0].tolist()
+        else:
+            missing_dk = fighter_col.tolist()
+        print(f"[DEBUG] Fighters without DK lines (will be filtered): {missing_dk}")
+    
     final_df = final_df[final_df["DK Line"].notna()].reset_index(drop=True)
+    print(f"[DEBUG] Rows after filtering NaN DK Lines: {len(final_df)}")
+    
     final_df = final_df.loc[:, ~final_df.columns.duplicated(keep='last')]
 
     return final_df
@@ -214,9 +366,6 @@ if __name__ == "__main__":
             print("\n[WARN] No data to process. Exiting.")
             exit(1)
         
-        print("\n--- Fighters missed by fuzzy match (NaN on DK Line) ---")
-        print(df_final[df_final['DK Line'].isna()]['fighter'])
-
         print("\n--- FINAL MERGED TABLE ---")
         print(df_final.to_string())
 

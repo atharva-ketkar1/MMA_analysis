@@ -34,11 +34,18 @@ def scrape_draftkings_ufc_markets():
             if mid not in strikes_ou:
                 continue
             participants = sel.get("participants", [])
-            fighter = (
-                participants[0]["name"]
-                if participants
-                else strikes_ou[mid]["name"].replace(" Total Significant Strikes O/U", "")
-            )
+            
+            # --- MODIFIED LOGIC START ---
+            if participants:
+                # Prefer the name from the participant list if available
+                fighter = participants[0]["name"]
+            else:
+                # Fallback: Clean the market name to get the fighter name
+                market_name = strikes_ou[mid]["name"]
+                # Example: "Jack Hermansson Total Significant Strikes O/U" -> "Jack Hermansson"
+                fighter = market_name.replace(" Total Significant Strikes O/U", "").strip()
+            # --- MODIFIED LOGIC END ---
+            
             label_str = sel.get("label", "")
             parts = label_str.split(' ')
             label_val = parts[0] if len(parts) > 0 else label_str
